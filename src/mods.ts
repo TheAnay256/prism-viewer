@@ -4,13 +4,10 @@ export type ModEntry = {
   folder: string
   // The `name` from mod_info.json, falling back to the folder name.
   name: string
-  // Whether ship_data.csv lists at least one hull whose .ship file has a sprite image
-  // in the mod. This decides inclusion in the Ships tab.
-  hasShipHulls: boolean
 }
 
-// A ship from a mod's data/hulls/ship_data.csv, with details from its matching
-// .ship file, as returned by /api/ship-hulls.
+// A ship from a mod's data/hulls/ship_data.csv, with its sprite from the matching
+// .ship file.
 export type ShipHull = {
   // The ship_data.csv `id`, which matches the .ship file's `hullId`.
   hullId: string
@@ -20,4 +17,9 @@ export type ShipHull = {
   sprite: string
   // The ship_data.csv `tech/manufacturer` value, or null if blank or absent.
   manufacturer: string | null
+}
+
+// A mod and all of its ships, as returned by /api/ships.
+export type ShipMod = ModEntry & {
+  ships: ShipHull[]
 }

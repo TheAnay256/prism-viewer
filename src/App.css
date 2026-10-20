@@ -114,8 +114,18 @@
   outline-offset: 2px;
 }
 
-.mod-ships-note {
-  margin-top: 12px;
+.ship-search {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.ship-search input {
+  width: 360px;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .mod-ships h3 {

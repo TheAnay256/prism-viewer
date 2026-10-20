@@ -3,7 +3,7 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Plugin } from 'vite'
-import type { ModEntry, ShipHull } from '../src/mods.ts'
+import type { ModEntry, ShipHull, ShipMod } from '../src/mods.ts'
 
 const IMAGE_TYPES: Record<string, string> = {
   '.png': 'image/png',
@@ -44,8 +44,10 @@ async function readModName(modDir: string): Promise<string | null> {
   }
 }
 
-// Subfolders of `dir` that contain a mod_info.json, with each mod's display name
-// and whether it has usable ship hulls, sorted by display name.
+const byModName = (a: ModEntry, b: ModEntry) => byName(a.name, b.name) || byName(a.folder, b.folder)
+
+// Subfolders of `dir` that contain a mod_info.json, with each mod's display name,
+// sorted by display name.
 async function listModFolders(dir: string): Promise<ModEntry[]> {
   const entries = await readdir(dir, { withFileTypes: true })
   // stat follows symlinks, so linked mod folders are included too.
@@ -55,13 +57,24 @@ async function listModFolders(dir: string): Promise<ModEntry[]> {
   )
   const folders = candidates.filter((_, i) => hasModInfo[i]).map((entry) => entry.name)
   const mods = await Promise.all(
-    folders.map(async (folder) => {
-      const modDir = path.join(dir, folder)
-      const [name, ships] = await Promise.all([readModName(modDir), findShips(modDir, 1)])
-      return { folder, name: name ?? folder, hasShipHulls: ships.length > 0 }
-    }),
+    folders.map(async (folder) => ({
+      folder,
+      name: (await readModName(path.join(dir, folder))) ?? folder,
+    })),
   )
-  return mods.sort((a, b) => byName(a.name, b.name) || byName(a.folder, b.folder))
+  return mods.sort(byModName)
+}
+
+// Every mod in `dir` that has at least one ship, with all of its ships.
+async function listShipMods(dir: string): Promise<ShipMod[]> {
+  const mods = await listModFolders(dir)
+  const withShips = await Promise.all(
+    mods.map(async (mod) => ({
+      ...mod,
+      ships: await findShips(path.join(dir, mod.folder)),
+    })),
+  )
+  return withShips.filter((mod) => mod.ships.length > 0)
 }
 
 // Starsector's data files are loose JSON: they may contain `#` or `//` comments
@@ -226,12 +239,11 @@ async function isModImage(modDir: string, sprite: string): Promise<boolean> {
 }
 
 // The mod's ships, in ship_data.csv order: each row with a name whose id has a
-// matching .ship file with a sprite image inside the mod. Stops once `limit` are found.
-async function findShips(modDir: string, limit: number): Promise<ShipHull[]> {
+// matching .ship file with a sprite image inside the mod.
+async function findShips(modDir: string): Promise<ShipHull[]> {
   const findHull = createHullFinder(path.join(modDir, 'data', 'hulls'))
   const ships: ShipHull[] = []
   for (const row of await readShipData(modDir)) {
-    if (ships.length >= limit) break
     if (!row.name) continue
     const hull = await findHull(row.id)
     if (!hull || !(await isModImage(modDir, hull.sprite))) continue
@@ -282,13 +294,14 @@ const routes: Record<string, Handler> = {
     sendJson(res, 200, { mods })
   },
 
-  // GET /api/ship-hulls?path=<mods folder>&mod=<name>&limit=<n | all> -> { hulls: ShipHull[] }
-  async '/api/ship-hulls'(params, res) {
-    const modDir = await requireModFolder(params)
-    const limitParam = params.get('limit')
-    const limit =
-      limitParam === 'all' ? Infinity : Math.max(1, Math.min(100, Number(limitParam) || 5))
-    sendJson(res, 200, { hulls: await findShips(modDir, limit) })
+  // GET /api/ships?path=<mods folder> -> { mods: ShipMod[] }
+  async '/api/ships'(params, res) {
+    const dir = params.get('path')?.trim() ?? ''
+    await requireFolder(dir)
+    const mods = await listShipMods(dir).catch(() => {
+      throw new HttpError(403, 'Folder could not be read')
+    })
+    sendJson(res, 200, { mods })
   },
 
   // GET /api/mod-file?path=<mods folder>&mod=<name>&file=<path in mod> -> image bytes

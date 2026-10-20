@@ -80,10 +80,8 @@ function AssetTabs({ modsFolder }: AssetTabsProps) {
 function renderPanel(id: TabId, label: string, modsFolder: AssetTabsProps['modsFolder']) {
   if (id !== 'ships') return <p>{label} will appear here.</p>
   if (!modsFolder) return <p>Enter a mods folder to see ships.</p>
-  const shipMods = modsFolder.mods.filter((mod) => mod.hasShipHulls)
-  if (shipMods.length === 0) return <p>No mods with ship hulls found.</p>
-  // Keyed by path so a different mods folder starts back on page 1.
-  return <ShipsPanel key={modsFolder.path} modsPath={modsFolder.path} mods={shipMods} />
+  // Keyed by path so a different mods folder starts with a fresh search and page 1.
+  return <ShipsPanel key={modsFolder.path} modsPath={modsFolder.path} />
 }
 
 export default AssetTabs
