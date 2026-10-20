@@ -5,7 +5,10 @@ const SHIP_LIMIT = 5
 
 type ModShipsProps = {
   modsPath: string
+  // The mod's folder name, used in API requests.
   mod: string
+  // The mod's display name.
+  title: string
 }
 
 type HullLookup =
@@ -19,7 +22,7 @@ function modFileUrl(modsPath: string, mod: string, file: string) {
 
 // One mod's entry in the Ships tab: its name and the sprites of its first few hulls.
 // Clicking the entry expands it to show every hull, and clicking again collapses it.
-function ModShips({ modsPath, mod }: ModShipsProps) {
+function ModShips({ modsPath, mod, title }: ModShipsProps) {
   const [lookup, setLookup] = useState<HullLookup | null>(null)
   const [expanded, setExpanded] = useState(false)
   // Set on first expand and kept, so the full list is fetched once and reused.
@@ -62,7 +65,7 @@ function ModShips({ modsPath, mod }: ModShipsProps) {
     <section className={expanded ? 'mod-ships mod-ships-expanded' : 'mod-ships'} onClick={toggleExpanded}>
       <h3>
         <button type="button" className="mod-toggle" aria-expanded={expanded}>
-          {mod}
+          {title}
         </button>
       </h3>
       {!current ? (
@@ -72,8 +75,8 @@ function ModShips({ modsPath, mod }: ModShipsProps) {
       ) : (
         <div>
           <ul className="ship-grid">
-            {hulls.map((hull, i) => (
-              <li key={i}>
+            {hulls.map((hull) => (
+              <li key={hull.hullId}>
                 <img
                   src={modFileUrl(modsPath, mod, hull.sprite)}
                   alt={hull.hullName}

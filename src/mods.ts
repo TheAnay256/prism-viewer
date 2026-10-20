@@ -1,20 +1,23 @@
 // A mod folder (one containing mod_info.json), as returned by /api/mods.
 export type ModEntry = {
+  // The mod's folder name, used to identify it in API requests.
+  folder: string
+  // The `name` from mod_info.json, falling back to the folder name.
   name: string
-  // Whether the mod has a graphics/ships folder.
-  hasShips: boolean
-  // Whether the mod has a graphics/weapons folder.
-  hasWeapons: boolean
-  // Whether the mod has a graphics/portraits folder.
-  hasPortraits: boolean
-  // Whether data/hulls has at least one hull whose sprite is an image file in the mod.
-  // This decides inclusion in the Ships tab.
+  // Whether ship_data.csv lists at least one hull whose .ship file has a sprite image
+  // in the mod. This decides inclusion in the Ships tab.
   hasShipHulls: boolean
 }
 
-// A ship hull read from a mod's data/hulls folder, as returned by /api/ship-hulls.
+// A ship from a mod's data/hulls/ship_data.csv, with details from its matching
+// .ship file, as returned by /api/ship-hulls.
 export type ShipHull = {
+  // The ship_data.csv `id`, which matches the .ship file's `hullId`.
+  hullId: string
+  // The ship_data.csv `name`. Rows without one are left out.
   hullName: string
   // Path to the hull's sprite, relative to the mod folder.
   sprite: string
+  // The ship_data.csv `tech/manufacturer` value, or null if blank or absent.
+  manufacturer: string | null
 }

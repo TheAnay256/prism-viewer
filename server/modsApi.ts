@@ -33,7 +33,19 @@ async function isDirectory(dir: string): Promise<boolean> {
 
 const byName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base' })
 
-// Subfolders of `dir` that contain a mod_info.json, with the asset folders each one has.
+// The `name` from a mod's mod_info.json, or null if it is missing or unreadable.
+async function readModName(modDir: string): Promise<string | null> {
+  try {
+    const info = parseLooseJson(await readFile(path.join(modDir, 'mod_info.json'), 'utf8'))
+    const name = (info as Record<string, unknown> | null)?.name
+    return typeof name === 'string' && name.trim() ? name.trim() : null
+  } catch {
+    return null
+  }
+}
+
+// Subfolders of `dir` that contain a mod_info.json, with each mod's display name
+// and whether it has usable ship hulls, sorted by display name.
 async function listModFolders(dir: string): Promise<ModEntry[]> {
   const entries = await readdir(dir, { withFileTypes: true })
   // stat follows symlinks, so linked mod folders are included too.
@@ -41,23 +53,15 @@ async function listModFolders(dir: string): Promise<ModEntry[]> {
   const hasModInfo = await Promise.all(
     candidates.map((entry) => isFile(path.join(dir, entry.name, 'mod_info.json'))),
   )
-  const names = candidates
-    .filter((_, i) => hasModInfo[i])
-    .map((entry) => entry.name)
-    .sort(byName)
-  return Promise.all(
-    names.map(async (name) => {
-      const modDir = path.join(dir, name)
-      const graphics = path.join(modDir, 'graphics')
-      const [hasShips, hasWeapons, hasPortraits, hulls] = await Promise.all([
-        isDirectory(path.join(graphics, 'ships')),
-        isDirectory(path.join(graphics, 'weapons')),
-        isDirectory(path.join(graphics, 'portraits')),
-        findHulls(modDir, 1),
-      ])
-      return { name, hasShips, hasWeapons, hasPortraits, hasShipHulls: hulls.length > 0 }
+  const folders = candidates.filter((_, i) => hasModInfo[i]).map((entry) => entry.name)
+  const mods = await Promise.all(
+    folders.map(async (folder) => {
+      const modDir = path.join(dir, folder)
+      const [name, ships] = await Promise.all([readModName(modDir), findShips(modDir, 1)])
+      return { folder, name: name ?? folder, hasShipHulls: ships.length > 0 }
     }),
   )
+  return mods.sort((a, b) => byName(a.name, b.name) || byName(a.folder, b.folder))
 }
 
 // Starsector's data files are loose JSON: they may contain `#` or `//` comments
@@ -84,41 +88,161 @@ function parseLooseJson(text: string): unknown {
   return JSON.parse(out.replace(/,(\s*[}\]])/g, '$1'))
 }
 
+// Parses CSV text (RFC 4180: quoted fields may hold commas, newlines and "" escapes)
+// into rows of cells.
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = []
+  let row: string[] = []
+  let cell = ''
+  let inQuotes = false
+  for (let i = text.charCodeAt(0) === 0xfeff ? 1 : 0; i < text.length; i++) {
+    const ch = text[i]
+    if (inQuotes) {
+      if (ch === '"' && text[i + 1] === '"') {
+        cell += '"'
+        i++
+      } else if (ch === '"') {
+        inQuotes = false
+      } else {
+        cell += ch
+      }
+    } else if (ch === '"') {
+      inQuotes = true
+    } else if (ch === ',') {
+      row.push(cell)
+      cell = ''
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++
+      row.push(cell)
+      rows.push(row)
+      row = []
+      cell = ''
+    } else {
+      cell += ch
+    }
+  }
+  if (cell || row.length > 0) {
+    row.push(cell)
+    rows.push(row)
+  }
+  return rows
+}
+
+// One row of a mod's data/hulls/ship_data.csv.
+type ShipDataRow = {
+  id: string
+  name: string | null
+  manufacturer: string | null
+}
+
+// The rows of `modDir`/data/hulls/ship_data.csv, in file order. Commented-out rows
+// (first cell starts with #), rows without an id and repeated ids are skipped.
+// Returns no rows if the file is missing or has no `id` column.
+async function readShipData(modDir: string): Promise<ShipDataRow[]> {
+  const text = await readFile(path.join(modDir, 'data', 'hulls', 'ship_data.csv'), 'utf8').catch(
+    () => '',
+  )
+  const [header = [], ...rows] = parseCsv(text)
+  const columns = header.map((name) => name.trim().toLowerCase())
+  const idCol = columns.indexOf('id')
+  if (idCol === -1) return []
+  const cell = (row: string[], name: string) => {
+    const value = row[columns.indexOf(name)]?.trim()
+    return value || null
+  }
+  const seen = new Set<string>()
+  const result: ShipDataRow[] = []
+  for (const row of rows) {
+    if (row[0]?.trimStart().startsWith('#')) continue
+    const id = row[idCol]?.trim()
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    result.push({ id, name: cell(row, 'name'), manufacturer: cell(row, 'tech/manufacturer') })
+  }
+  return result
+}
+
 const MAX_HULL_FILE_BYTES = 1024 * 1024
 
-// Reads one hull file, returning its name and sprite path (relative to the mod
-// folder, forward slashes), or null if it isn't a usable hull definition.
-async function readHull(file: string): Promise<ShipHull | null> {
+// The parts of a .ship file the app uses.
+type HullFile = {
+  hullId: string | null
+  hullName: string | null
+  // Sprite path relative to the mod folder, with forward slashes.
+  sprite: string
+}
+
+// Reads one .ship file, or returns null if it isn't a hull definition with a sprite.
+async function readHull(file: string): Promise<HullFile | null> {
   const info = await stat(file).catch(() => null)
   if (!info?.isFile() || info.size > MAX_HULL_FILE_BYTES) return null
   try {
     const hull = parseLooseJson(await readFile(file, 'utf8')) as Record<string, unknown>
     if (typeof hull?.spriteName !== 'string' || !hull.spriteName) return null
-    const sprite = hull.spriteName.replace(/\\/g, '/').replace(/^\/+/, '')
-    const name = typeof hull.hullName === 'string' && hull.hullName ? hull.hullName : path.basename(file)
-    return { hullName: name, sprite }
+    const text = (value: unknown) => (typeof value === 'string' && value ? value : null)
+    return {
+      hullId: text(hull.hullId),
+      hullName: text(hull.hullName),
+      sprite: hull.spriteName.replace(/\\/g, '/').replace(/^\/+/, ''),
+    }
   } catch {
-    return null // Not JSON (e.g. ship_data.csv).
+    return null
   }
 }
 
-// Hulls from the files in `modDir`/data/hulls, in file name order, keeping only
-// those whose sprite is an image file inside the mod (wherever it sits under the
-// mod, since not every mod keeps sprites in graphics/ships). Stops once `limit`
-// are found.
-async function findHulls(modDir: string, limit: number): Promise<ShipHull[]> {
-  const hullsDir = path.join(modDir, 'data', 'hulls')
-  const names = (await readdir(hullsDir).catch(() => [])).sort(byName)
-  const found: ShipHull[] = []
-  for (const name of names) {
-    if (found.length >= limit) break
-    const hull = await readHull(path.join(hullsDir, name))
-    if (!hull) continue
-    const sprite = path.resolve(modDir, hull.sprite)
-    const isImage = path.extname(sprite).toLowerCase() in IMAGE_TYPES
-    if (sprite.startsWith(modDir + path.sep) && isImage && (await isFile(sprite))) found.push(hull)
+// Returns a function that finds the .ship file in `hullsDir` whose hullId matches
+// an id. It tries `<id>.ship` first (the usual naming) and only falls back to
+// reading every .ship file, once, when that file doesn't match.
+function createHullFinder(hullsDir: string) {
+  let index: Promise<Map<string, HullFile>> | null = null
+
+  async function buildIndex() {
+    const byId = new Map<string, HullFile>()
+    const names = (await readdir(hullsDir).catch(() => [])).sort(byName)
+    for (const name of names) {
+      if (path.extname(name).toLowerCase() !== '.ship') continue
+      const hull = await readHull(path.join(hullsDir, name))
+      if (hull?.hullId && !byId.has(hull.hullId)) byId.set(hull.hullId, hull)
+    }
+    return byId
   }
-  return found
+
+  return async (id: string): Promise<HullFile | null> => {
+    if (!/[/\\]/.test(id)) {
+      const hull = await readHull(path.join(hullsDir, `${id}.ship`))
+      if (hull?.hullId === id) return hull
+    }
+    index ??= buildIndex()
+    return (await index).get(id) ?? null
+  }
+}
+
+// Whether `sprite` (relative to `modDir`) is an image file inside the mod. Sprites
+// can sit anywhere in the mod, since not every mod keeps them in graphics/ships.
+async function isModImage(modDir: string, sprite: string): Promise<boolean> {
+  const file = path.resolve(modDir, sprite)
+  const isImage = path.extname(file).toLowerCase() in IMAGE_TYPES
+  return file.startsWith(modDir + path.sep) && isImage && (await isFile(file))
+}
+
+// The mod's ships, in ship_data.csv order: each row with a name whose id has a
+// matching .ship file with a sprite image inside the mod. Stops once `limit` are found.
+async function findShips(modDir: string, limit: number): Promise<ShipHull[]> {
+  const findHull = createHullFinder(path.join(modDir, 'data', 'hulls'))
+  const ships: ShipHull[] = []
+  for (const row of await readShipData(modDir)) {
+    if (ships.length >= limit) break
+    if (!row.name) continue
+    const hull = await findHull(row.id)
+    if (!hull || !(await isModImage(modDir, hull.sprite))) continue
+    ships.push({
+      hullId: row.id,
+      hullName: row.name,
+      sprite: hull.sprite,
+      manufacturer: row.manufacturer,
+    })
+  }
+  return ships
 }
 
 async function requireFolder(dir: string) {
@@ -164,7 +288,7 @@ const routes: Record<string, Handler> = {
     const limitParam = params.get('limit')
     const limit =
       limitParam === 'all' ? Infinity : Math.max(1, Math.min(100, Number(limitParam) || 5))
-    sendJson(res, 200, { hulls: await findHulls(modDir, limit) })
+    sendJson(res, 200, { hulls: await findShips(modDir, limit) })
   },
 
   // GET /api/mod-file?path=<mods folder>&mod=<name>&file=<path in mod> -> image bytes

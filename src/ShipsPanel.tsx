@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import ModShips from './ModShips.tsx'
+import type { ModEntry } from './mods.ts'
 
 const MODS_PER_PAGE = 10
 
 type ShipsPanelProps = {
   modsPath: string
-  // Names of the mods that have a graphics/ships folder.
-  mods: string[]
+  // The mods with at least one hull that has a valid sprite.
+  mods: ModEntry[]
 }
 
 // Paginated list of mods, each showing its first few ship sprites.
@@ -22,8 +23,8 @@ function ShipsPanel({ modsPath, mods }: ShipsPanelProps) {
     <div className="ships-panel">
       <ul className="mod-list">
         {pageMods.map((mod) => (
-          <li key={mod}>
-            <ModShips modsPath={modsPath} mod={mod} />
+          <li key={mod.folder}>
+            <ModShips modsPath={modsPath} mod={mod.folder} title={mod.name} />
           </li>
         ))}
       </ul>
